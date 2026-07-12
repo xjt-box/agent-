@@ -1,39 +1,27 @@
-"""
-Multi-Agent E-Commerce Recommendation System — FastAPI Entry Point
+﻿from __future__ import annotations
 
-Endpoints:
-  POST /api/v1/recommend          - 获取个性化推荐
-  POST /api/v1/recommend/graph    - 通过LangGraph pipeline推荐
-  GET  /api/v1/experiments        - 查看A/B实验状态
-  GET  /api/v1/metrics            - 查看系统监控指标
-  GET  /health                    - 健康检查
-"""
-
-from __future__ import annotations
-
-import sys
 import os
-
-sys.path.insert(0, os.path.dirname(__file__))
-
+import sys
 from contextlib import asynccontextmanager
-from typing import Any
 
 import structlog
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+
+sys.path.insert(0, os.path.dirname(__file__))
 
 from config import get_settings
 from models.schemas import RecommendationRequest, RecommendationResponse
-from orchestrator.supervisor import SupervisorOrchestrator
 from orchestrator.graph import build_recommendation_graph
+from orchestrator.supervisor import SupervisorOrchestrator
 from services.ab_test import ABTestEngine
 from services.metrics import MetricsCollector
 
+
 logger = structlog.get_logger()
 settings = get_settings()
-
 
 ab_engine = ABTestEngine()
 metrics_collector = MetricsCollector()
@@ -52,7 +40,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Multi-Agent E-Commerce Recommendation System",
-    description="用户画像Agent + 商品推荐Agent + 营销文案Agent + 库存决策Agent，并行+聚合模式",
+    description="User profile agent, product recommendation agent, marketing copy agent, and inventory decision agent.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -65,6 +53,12 @@ app.add_middleware(
 )
 
 
+@app.get("/")
+async def home():
+    frontend_path = os.path.join(os.path.dirname(__file__), "frontend", "index.html")
+    return FileResponse(frontend_path)
+
+
 @app.get("/health")
 async def health():
     return {"status": "healthy", "model": settings.llm_model}
@@ -72,7 +66,6 @@ async def health():
 
 @app.post("/api/v1/recommend", response_model=RecommendationResponse)
 async def recommend(request: RecommendationRequest):
-    """使用Supervisor编排器进行推荐 (生产推荐用法)"""
     response = await supervisor.recommend(request)
     _collect_metrics(response)
     return response
@@ -80,9 +73,9 @@ async def recommend(request: RecommendationRequest):
 
 @app.post("/api/v1/recommend/graph")
 async def recommend_via_graph(request: RecommendationRequest):
-    """使用LangGraph状态图进行推荐 (展示LangGraph能力)"""
     if not rec_graph:
         return {"error": "Graph not initialized"}
+
     state = {
         "user_id": request.user_id,
         "scene": request.scene,
@@ -102,7 +95,6 @@ async def recommend_via_graph(request: RecommendationRequest):
 
 @app.get("/api/v1/experiments")
 async def get_experiments():
-    """查看所有A/B实验状态"""
     experiments = {}
     for exp_id, exp in ab_engine.experiments.items():
         experiments[exp_id] = {
@@ -110,13 +102,13 @@ async def get_experiments():
             "enabled": exp.enabled,
             "groups": [
                 {
-                    "name": g.name,
-                    "weight": g.weight,
-                    "config": g.config,
-                    "successes": g.successes,
-                    "failures": g.failures,
+                    "name": group.name,
+                    "weight": group.weight,
+                    "config": group.config,
+                    "successes": group.successes,
+                    "failures": group.failures,
                 }
-                for g in exp.groups
+                for group in exp.groups
             ],
             "stats": ab_engine.get_stats(exp_id),
         }
@@ -125,7 +117,6 @@ async def get_experiments():
 
 @app.get("/api/v1/metrics")
 async def get_metrics():
-    """查看系统监控指标"""
     return {
         "agents": metrics_collector.get_agent_stats(),
         "business": metrics_collector.get_business_stats(),
@@ -134,7 +125,6 @@ async def get_metrics():
 
 @app.post("/api/v1/experiments/{experiment_id}/outcome")
 async def record_outcome(experiment_id: str, group: str, success: bool):
-    """记录A/B测试结果,更新Thompson Sampling"""
     ab_engine.record_outcome(experiment_id, group, success)
     return {"status": "recorded"}
 

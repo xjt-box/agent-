@@ -1,5 +1,6 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
+import asyncio
 import time
 from abc import ABC, abstractmethod
 from typing import Any
@@ -55,7 +56,7 @@ class BaseAgent(ABC):
         async def _inner():
             return await self._execute(**kwargs)
 
-        return await _inner()
+        return await asyncio.wait_for(_inner(), timeout=self.timeout)
 
     def _fallback(self, latency_ms: float, exc: Exception) -> AgentResult:
         """Return a degraded but valid result when the agent fails."""
@@ -72,3 +73,4 @@ class BaseAgent(ABC):
         if self._call_count == 0:
             return 0.0
         return self._error_count / self._call_count
+
