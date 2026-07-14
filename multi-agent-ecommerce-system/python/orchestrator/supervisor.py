@@ -22,7 +22,8 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Protocol
 
 import structlog
 
@@ -33,6 +34,7 @@ from agents import (
     UserProfileAgent,
 )
 from models.schemas import (
+    AgentResult,
     Product,
     RecommendationRequest,
     RecommendationResponse,
@@ -43,14 +45,41 @@ from services.ab_test import ABTestEngine
 logger = structlog.get_logger()
 
 
+class AgentRunner(Protocol):
+    """Minimal agent contract used by the supervisor."""
+
+    async def run(self, **kwargs: Any) -> AgentResult:
+        ...
+
+
+@dataclass(frozen=True)
+class AgentBundle:
+    """Agent dependencies required by a recommendation run."""
+
+    user_profile: AgentRunner
+    product_rec: AgentRunner
+    marketing_copy: AgentRunner
+    inventory: AgentRunner
+
+
 class SupervisorOrchestrator:
     """Coordinates four agents in parallel-then-aggregate pattern."""
 
-    def __init__(self, ab_engine: ABTestEngine | None = None):
-        self.user_profile_agent = UserProfileAgent()
-        self.product_rec_agent = ProductRecAgent()
-        self.marketing_copy_agent = MarketingCopyAgent()
-        self.inventory_agent = InventoryAgent()
+    def __init__(
+        self,
+        ab_engine: ABTestEngine | None = None,
+        agents: AgentBundle | None = None,
+    ):
+        if agents:
+            self.user_profile_agent = agents.user_profile
+            self.product_rec_agent = agents.product_rec
+            self.marketing_copy_agent = agents.marketing_copy
+            self.inventory_agent = agents.inventory
+        else:
+            self.user_profile_agent = UserProfileAgent()
+            self.product_rec_agent = ProductRecAgent()
+            self.marketing_copy_agent = MarketingCopyAgent()
+            self.inventory_agent = InventoryAgent()
         self.ab_engine = ab_engine or ABTestEngine()
 
     async def recommend(self, request: RecommendationRequest) -> RecommendationResponse:
