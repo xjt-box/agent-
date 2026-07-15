@@ -1,18 +1,22 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import sys
+import uuid
 from contextlib import asynccontextmanager
 
+import aiosqlite
 import structlog
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config import get_settings
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from models.schemas import RecommendationRequest, RecommendationResponse
 from orchestrator.graph import build_recommendation_graph
 from orchestrator.supervisor import SupervisorOrchestrator
@@ -27,15 +31,45 @@ ab_engine = ABTestEngine()
 metrics_collector = MetricsCollector()
 supervisor = SupervisorOrchestrator(ab_engine=ab_engine)
 rec_graph = None
+graph_checkpointer = None
+graph_checkpointer_connection = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global rec_graph
-    rec_graph = build_recommendation_graph()
-    logger.info("app.startup", model=settings.llm_model)
-    yield
-    logger.info("app.shutdown")
+    global rec_graph, graph_checkpointer, graph_checkpointer_connection
+    checkpoint_path = _checkpoint_database_path(settings.database_url)
+    graph_checkpointer_connection = await aiosqlite.connect(checkpoint_path)
+    graph_checkpointer = AsyncSqliteSaver(
+        graph_checkpointer_connection,
+        serde=_checkpoint_serializer(),
+    )
+    rec_graph = build_recommendation_graph(checkpointer=graph_checkpointer)
+    logger.info("app.startup", model=settings.llm_model, checkpoint_path=checkpoint_path)
+    try:
+        yield
+    finally:
+        await graph_checkpointer_connection.close()
+        rec_graph = None
+        graph_checkpointer = None
+        graph_checkpointer_connection = None
+        logger.info("app.shutdown")
+
+def _checkpoint_database_path(database_url: str) -> str:
+    if not database_url.startswith("sqlite:///"):
+        raise ValueError("LangGraph checkpointing requires a SQLite database URL.")
+    return database_url.removeprefix("sqlite:///")
+def _checkpoint_serializer() -> JsonPlusSerializer:
+    return JsonPlusSerializer(
+        allowed_msgpack_modules=[
+            ("models.schemas", "Product"),
+            ("models.schemas", "UserProfile"),
+            ("models.schemas", "UserProfileResult"),
+            ("models.schemas", "ProductRecResult"),
+            ("models.schemas", "InventoryResult"),
+            ("models.schemas", "MarketingCopyResult"),
+        ]
+    )
 
 
 app = FastAPI(
@@ -73,22 +107,35 @@ async def recommend(request: RecommendationRequest):
 
 @app.post("/api/v1/recommend/graph")
 async def recommend_via_graph(request: RecommendationRequest):
-    if not rec_graph:
-        return {"error": "Graph not initialized"}
+    if not rec_graph or not graph_checkpointer:
+        raise HTTPException(status_code=503, detail="Graph is not initialized.")
 
-    state = {
-        "user_id": request.user_id,
-        "scene": request.scene,
-        "num_items": request.num_items,
-        "context": request.context,
-    }
-    result = await rec_graph.ainvoke(state)
+    run_id = request.resume_run_id or str(uuid.uuid4())
+    config = {"configurable": {"thread_id": run_id}}
+    if request.resume_run_id:
+        checkpoint = await graph_checkpointer.aget_tuple(config)
+        if checkpoint is None:
+            raise HTTPException(status_code=404, detail="Recommendation run was not found.")
+        snapshot = await rec_graph.aget_state(config)
+        if snapshot.values.get("user_id") != request.user_id:
+            raise HTTPException(status_code=403, detail="Recommendation run does not belong to this user.")
+        result = await rec_graph.ainvoke(None, config=config)
+    else:
+        state = {
+            "request_id": run_id,
+            "user_id": request.user_id,
+            "scene": request.scene,
+            "num_items": request.num_items,
+            "context": request.context,
+        }
+        result = await rec_graph.ainvoke(state, config=config)
     return {
         "request_id": result.get("request_id"),
         "user_id": result.get("user_id"),
         "products": [p.model_dump() for p in result.get("final_products", [])],
         "marketing_copies": result.get("marketing_copies", []),
         "experiment_group": result.get("experiment_group", "control"),
+        "degradation_reasons": result.get("degradation_reasons", []),
         "total_latency_ms": round(result.get("total_latency_ms", 0), 1),
     }
 

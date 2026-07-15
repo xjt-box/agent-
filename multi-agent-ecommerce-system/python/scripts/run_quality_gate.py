@@ -10,7 +10,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TEST_FILES = [
     PROJECT_ROOT / "tests" / "test_ab_test.py",
+    PROJECT_ROOT / "tests" / "test_catalog_repository.py",
+    PROJECT_ROOT / "tests" / "test_product_rec_catalog.py",
+    PROJECT_ROOT / "tests" / "test_inventory_catalog.py",
     PROJECT_ROOT / "tests" / "test_recommendation_eval.py",
+    PROJECT_ROOT / "tests" / "test_recommendation_run_store.py",
+    PROJECT_ROOT / "tests" / "test_graph_checkpoint.py",
 ]
 
 

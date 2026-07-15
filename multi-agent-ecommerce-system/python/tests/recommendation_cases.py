@@ -74,11 +74,12 @@ GOLDEN_RECOMMENDATION_CASES = [
     ),
     GoldenRecommendationCase(
         case=RecommendationCase(
-            name="empty_inventory_preserves_current_fallback",
+            name="empty_inventory_returns_no_recommendations",
             request=RecommendationRequest(user_id="golden_fallback", num_items=1),
             expectation=RecommendationExpectation(
                 max_products=1,
-                expected_copy_product_ids={"P002"},
+                allowed_product_ids=set(),
+                expected_copy_product_ids=set(),
                 required_agent_results=REQUIRED_AGENT_RESULTS,
             ),
         ),

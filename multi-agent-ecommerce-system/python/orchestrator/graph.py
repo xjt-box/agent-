@@ -42,6 +42,7 @@ class PipelineState(TypedDict, total=False):
     available_ids: set[str]
     final_products: list[Product]
     marketing_copies: list[dict[str, str]]
+    degradation_reasons: list[str]
 
     agent_results: dict[str, Any]
     total_latency_ms: float
@@ -56,9 +57,10 @@ ab_engine = ABTestEngine()
 
 
 async def init_node(state: PipelineState) -> PipelineState:
-    state["request_id"] = str(uuid.uuid4())
+    state["request_id"] = state.get("request_id") or str(uuid.uuid4())
     state["_start_time"] = time.perf_counter()
     state["agent_results"] = {}
+    state["degradation_reasons"] = []
     exp = ab_engine.assign(state["user_id"])
     state["experiment_group"] = exp.get("group", "control")
     return state
@@ -71,6 +73,8 @@ async def user_profile_node(state: PipelineState) -> PipelineState:
     )
     state["user_profile"] = getattr(result, "profile", None)
     state["agent_results"]["user_profile"] = result
+    if not result.success:
+        state["degradation_reasons"].append("user_profile_unavailable")
     return state
 
 
@@ -81,6 +85,8 @@ async def product_recall_node(state: PipelineState) -> PipelineState:
     )
     state["raw_products"] = getattr(result, "products", [])
     state["agent_results"]["product_recall"] = result
+    if not result.success:
+        state["degradation_reasons"].append("product_recall_unavailable")
     return state
 
 
@@ -102,6 +108,8 @@ async def rerank_node(state: PipelineState) -> PipelineState:
     )
     state["ranked_products"] = getattr(result, "products", state.get("raw_products", []))
     state["agent_results"]["rerank"] = result
+    if not result.success:
+        state["degradation_reasons"].append("product_rerank_unavailable")
     return state
 
 
@@ -111,6 +119,8 @@ async def inventory_node(state: PipelineState) -> PipelineState:
     )
     state["available_ids"] = set(getattr(result, "available_products", []))
     state["agent_results"]["inventory"] = result
+    if not result.success:
+        state["degradation_reasons"].append("inventory_unavailable")
     return state
 
 
@@ -127,14 +137,17 @@ async def parallel_phase2(state: PipelineState) -> PipelineState:
 
 async def filter_node(state: PipelineState) -> PipelineState:
     ranked = state.get("ranked_products", [])
-    avail = state.get("available_ids", set())
-    num = state.get("num_items", 10)
-    final = [p for p in ranked if p.product_id in avail]
-    if not final:
-        final = ranked
-    state["final_products"] = final[:num]
-    return state
+    inventory_result = state["agent_results"].get("inventory")
+    if not inventory_result or not inventory_result.success:
+        state["final_products"] = []
+        return state
 
+    available_ids = state.get("available_ids", set())
+    final = [product for product in ranked if product.product_id in available_ids]
+    if ranked and not final:
+        state["degradation_reasons"].append("no_available_products")
+    state["final_products"] = final[:state.get("num_items", 10)]
+    return state
 
 async def marketing_copy_node(state: PipelineState) -> PipelineState:
     result = await marketing_copy_agent.run(
@@ -143,6 +156,8 @@ async def marketing_copy_node(state: PipelineState) -> PipelineState:
     )
     state["marketing_copies"] = getattr(result, "copies", [])
     state["agent_results"]["marketing_copy"] = result
+    if not result.success:
+        state["degradation_reasons"].append("marketing_copy_unavailable")
     return state
 
 
@@ -151,7 +166,7 @@ async def aggregate_node(state: PipelineState) -> PipelineState:
     return state
 
 
-def build_recommendation_graph() -> StateGraph:
+def build_recommendation_graph(checkpointer: Any | None = None) -> Any:
     """Build and compile the LangGraph state graph."""
     graph = StateGraph(PipelineState)
 
@@ -170,4 +185,4 @@ def build_recommendation_graph() -> StateGraph:
     graph.add_edge("marketing_copy", "aggregate")
     graph.add_edge("aggregate", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)

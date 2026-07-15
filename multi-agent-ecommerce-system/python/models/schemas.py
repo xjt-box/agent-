@@ -48,6 +48,7 @@ class RecommendationRequest(BaseModel):
     scene: str = "homepage"
     num_items: int = 10
     context: dict[str, Any] = Field(default_factory=dict)
+    resume_run_id: str | None = None
 
 
 class AgentResult(BaseModel):
@@ -90,5 +91,6 @@ class RecommendationResponse(BaseModel):
     marketing_copies: list[dict[str, str]] = Field(default_factory=list)
     experiment_group: str = "control"
     agent_results: dict[str, AgentResult] = Field(default_factory=dict)
+    degradation_reasons: list[str] = Field(default_factory=list)
     total_latency_ms: float = 0.0
     timestamp: datetime = Field(default_factory=datetime.now)

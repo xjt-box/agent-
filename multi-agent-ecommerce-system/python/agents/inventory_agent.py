@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from models.schemas import InventoryResult, Product
+from services.catalog_repository import CatalogRepository
 
 from .base_agent import BaseAgent
 
@@ -19,7 +20,7 @@ HOT_ITEM_PURCHASE_LIMIT = 2
 
 
 class InventoryAgent(BaseAgent):
-    def __init__(self):
+    def __init__(self, catalog_repository: CatalogRepository | None = None):
         from config import get_settings
 
         settings = get_settings()
@@ -27,8 +28,8 @@ class InventoryAgent(BaseAgent):
             name="inventory",
             timeout=settings.agent_timeout_inventory,
         )
-        self.db: Any = None  # injected in Phase 2
-
+        self.catalog_repository = catalog_repository or CatalogRepository(settings.database_url)
+        self.catalog_repository.initialize()
     async def _execute(self, **kwargs: Any) -> InventoryResult:
         products: list[Product] = kwargs.get("products", [])
 
@@ -79,10 +80,9 @@ class InventoryAgent(BaseAgent):
         )
 
     async def _check_stock(self, product_id: str, fallback_stock: int) -> int:
-        if self.db:
-            pass  # Phase 2: real DB query via MCP
-        return fallback_stock
-
+        """Read stock from the persisted catalog rather than product payload state."""
+        stock_by_product = self.catalog_repository.get_stock([product_id])
+        return stock_by_product.get(product_id, 0)
     def _calc_purchase_limit(self, product: Product, stock: int) -> int | None:
         """Dynamic purchase limit based on stock depth and product heat."""
         is_hot = "新品" in product.tags or "旗舰" in product.tags

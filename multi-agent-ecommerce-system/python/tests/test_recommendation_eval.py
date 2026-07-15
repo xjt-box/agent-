@@ -44,11 +44,16 @@ class FakeProductRecAgent:
 
 
 class FakeInventoryAgent:
-    def __init__(self, available_product_ids: list[str]):
+    def __init__(self, available_product_ids: list[str], success: bool = True):
         self.available_product_ids = available_product_ids
+        self.success = success
 
     async def run(self, **kwargs: Any) -> InventoryResult:
-        return InventoryResult(available_products=self.available_product_ids)
+        return InventoryResult(
+            success=self.success,
+            error=None if self.success else "inventory service unavailable",
+            available_products=self.available_product_ids,
+        )
 
 
 class FakeMarketingCopyAgent:
@@ -60,13 +65,15 @@ class FakeMarketingCopyAgent:
         return MarketingCopyResult(copies=copies)
 
 
-def build_supervisor(available_product_ids: list[str]) -> SupervisorOrchestrator:
+def build_supervisor(
+    available_product_ids: list[str], inventory_success: bool = True
+) -> SupervisorOrchestrator:
     return SupervisorOrchestrator(
         agents=AgentBundle(
             user_profile=FakeUserProfileAgent(),
             product_rec=FakeProductRecAgent(),
             marketing_copy=FakeMarketingCopyAgent(),
-            inventory=FakeInventoryAgent(available_product_ids),
+            inventory=FakeInventoryAgent(available_product_ids, inventory_success),
         )
     )
 
@@ -104,8 +111,19 @@ def test_agent_failure_propagates() -> None:
         raise AssertionError("Agent failure did not propagate.")
 
 
+
+def test_inventory_failure_returns_no_unverified_products() -> None:
+    response = asyncio.run(
+        build_supervisor(["P001"], inventory_success=False).recommend(
+            RecommendationRequest(user_id="user_inventory_failure", num_items=1)
+        )
+    )
+
+    assert response.products == []
+    assert response.marketing_copies == []
+    assert "inventory_unavailable" in response.degradation_reasons
 def test_contract_rejects_unknown_copy_product() -> None:
-    response = asyncio.run(build_supervisor(["P001"]).recommend(
+    response = asyncio.run(build_supervisor(["P002"]).recommend(
         RecommendationRequest(user_id="user_004", num_items=1)
     ))
     response.marketing_copies = [{"product_id": "P999", "copy": "Invalid."}]
@@ -122,7 +140,7 @@ def test_contract_rejects_unknown_copy_product() -> None:
 
 
 def test_contract_rejects_empty_copy() -> None:
-    response = asyncio.run(build_supervisor(["P001"]).recommend(
+    response = asyncio.run(build_supervisor(["P002"]).recommend(
         RecommendationRequest(user_id="user_empty_copy", num_items=1)
     ))
     response.marketing_copies[0]["copy"] = ""
@@ -144,6 +162,7 @@ def test_constructor_remains_backward_compatible() -> None:
 if __name__ == "__main__":
     test_golden_recommendation_cases()
     test_agent_failure_propagates()
+    test_inventory_failure_returns_no_unverified_products()
     test_contract_rejects_unknown_copy_product()
     test_contract_rejects_empty_copy()
     test_constructor_remains_backward_compatible()

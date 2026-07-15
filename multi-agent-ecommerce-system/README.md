@@ -5,8 +5,9 @@
 ## 功能
 
 - 用户画像：基于用户行为和 RFM 信息生成分群与偏好。
-- 商品推荐：候选商品召回后结合用户画像进行重排。
-- 库存决策：过滤不可售商品，并输出低库存预警和限购建议。
+- 商品推荐：候选商品从 SQLite 目录读取后，结合用户画像进行重排。
+- 库存决策：从 SQLite 查询实时库存，过滤不可售商品，并输出低库存预警和限购建议。
+- 保守降级：库存为空或库存服务不可用时不推荐商品、不生成文案，并通过 `degradation_reasons` 返回原因。
 - 营销文案：按用户分群生成结构化商品文案，并过滤敏感词。
 - 实验与监控：内置 A/B 分组、Thompson Sampling 和指标查询接口。
 - 质量门禁：使用 Fake Agent、黄金用例和确定性合同离线验证推荐主链路；GitHub Actions 会在推送和 PR 时自动运行检查。
@@ -56,7 +57,7 @@ ECOM_LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ECOM_LLM_MODEL=qwen-plus
 ```
 
-也可以使用其他 OpenAI 兼容服务，只需替换 `ECOM_LLM_BASE_URL`、`ECOM_LLM_MODEL` 和密钥。不要提交 `.env` 文件。
+也可以使用其他 OpenAI 兼容服务，只需替换 `ECOM_LLM_BASE_URL`、`ECOM_LLM_MODEL` 和密钥。不要提交 `.env` 文件。服务首次启动时会自动创建 `ecommerce.db` 并写入本地种子商品。
 
 ### 3. 启动服务
 
@@ -114,6 +115,9 @@ cd multi-agent-ecommerce-system\python
 检查内容包括：
 
 - A/B 测试引擎行为。
+- SQLite 商品目录、库存更新和非法库存校验。
+- 商品推荐 Agent 使用 SQLite 候选目录和用户偏好排序。
+- 数据库库存为 0 的商品会被 Supervisor 从最终推荐和营销文案中排除。
 - 推荐数量、商品去重和库存范围。
 - 营销文案与推荐商品的一致性。
 - Agent 结果完整性、空输入和异常边界。
@@ -123,8 +127,11 @@ cd multi-agent-ecommerce-system\python
 
 ```text
 [PASS] test_ab_test.py
+[PASS] test_catalog_repository.py
+[PASS] test_product_rec_catalog.py
+[PASS] test_inventory_catalog.py
 [PASS] test_recommendation_eval.py
-Quality gate summary: passed=2 failed=0
+Quality gate summary: passed=5 failed=0
 ```
 
 ## 开发说明
@@ -136,3 +143,37 @@ Quality gate summary: passed=2 failed=0
 ## 技术栈
 
 Python, FastAPI, asyncio, LangGraph, LangChain, Pydantic, Redis, Prometheus, Docker, GitHub Actions。
+## Resume a recommendation run
+
+The Supervisor stores phase checkpoints in the configured SQLite database. A normal
+`POST /api/v1/recommend` response returns `request_id`; submit the same request with
+that value as `resume_run_id` to continue a run after an interruption. Checkpoints
+are restricted to the original `user_id`.
+
+```json
+{
+  "user_id": "user_001",
+  "scene": "homepage",
+  "num_items": 5,
+  "resume_run_id": "the-previous-request-id"
+}
+```
+
+A checkpoint after Phase 1 resumes from re-ranking and inventory validation. A
+checkpoint after Phase 2 only regenerates marketing copy. Completed runs return the
+persisted response without repeating agent calls.
+## LangGraph checkpoint recovery
+
+`POST /api/v1/recommend/graph` now stores a durable checkpoint after every LangGraph
+node in SQLite. The response `request_id` is also the graph run ID. Submit the same
+request with `resume_run_id` after an interruption to continue from the most recent
+checkpoint. Recovery is restricted to the original `user_id`.
+### Recordable checkpoint demo
+
+Run the deterministic end-to-end demo below to show a FastAPI graph request and a
+second request recovered with the returned run ID. It does not call an external model.
+
+```powershell
+cd multi-agent-ecommerce-system\python
+.\.venv\Scripts\python.exe .\scripts\demo_graph_checkpoint_recovery.py
+```
